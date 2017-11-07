@@ -18,6 +18,7 @@ from sklearn.preprocessing import LabelEncoder
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.model_selection import train_test_split
 from sklearn.random_projection import SparseRandomProjection
+from sklearn.random_projection import johnson_lindenstrauss_min_dim
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.ensemble import ExtraTreesClassifier
 from sklearn.ensemble import BaggingClassifier
@@ -40,16 +41,16 @@ rf = RandomForestClassifier(n_estimators=300,
                             max_leaf_nodes=None,
                             bootstrap=True,
                             oob_score=False,
-                            n_jobs=4,
+                            n_jobs=80,
                             random_state=13,
                             verbose=1,
                             warm_start=True)
 et = ExtraTreesClassifier(n_estimators=300,
-                          n_jobs=4)
+                          n_jobs=80)
 bg = BaggingClassifier(n_estimators=300,
                        max_samples=0.8,
                        max_features=0.8,
-                       n_jobs=4,
+                       n_jobs=80,
                        random_state=1,
                        verbose=1)
 
@@ -96,13 +97,13 @@ for m_id in mall_id_list:
 
     print "4.2 add features"
     # add location feature
-    for k in range(shop_infos_m.shape[0]):
-        long_diff_name = 'lg_diff_' + shop_infos_m.loc[k, 'shop_id']
-        long_diff = 1000 * (datasets_m.loc[:, 'longitude'] - shop_infos_m.loc[k, 'longitude'])
-        datasets_m.loc[:, long_diff_name] = MinMaxScaler().fit_transform(long_diff.values.reshape(-1, 1))
-        lati_diff_name = 'lt_diff_' + shop_infos_m.loc[k, 'shop_id']
-        lati_diff = 1000 * (datasets_m.loc[:, 'latitude'] - shop_infos_m.loc[k, 'latitude'])
-        datasets_m.loc[:, lati_diff_name] = MinMaxScaler().fit_transform(lati_diff.values.reshape(-1, 1))
+    #for k in range(shop_infos_m.shape[0]):
+    #    long_diff_name = 'lg_diff_' + shop_infos_m.loc[k, 'shop_id']
+    #    long_diff = 1000 * (datasets_m.loc[:, 'longitude'] - shop_infos_m.loc[k, 'longitude'])
+    #    datasets_m.loc[:, long_diff_name] = MinMaxScaler().fit_transform(long_diff.values.reshape(-1, 1))
+    #    lati_diff_name = 'lt_diff_' + shop_infos_m.loc[k, 'shop_id']
+    #    lati_diff = 1000 * (datasets_m.loc[:, 'latitude'] - shop_infos_m.loc[k, 'latitude'])
+    #    datasets_m.loc[:, lati_diff_name] = MinMaxScaler().fit_transform(lati_diff.values.reshape(-1, 1))
 
     # add time feature
     datasets_m.loc[:, 'wday'] = datasets_m.time_stamp.apply(lambda t: time.strptime(t, '%Y-%m-%d %H:%M').tm_wday)
@@ -110,8 +111,7 @@ for m_id in mall_id_list:
     datasets_m.loc[:, 'min'] = datasets_m.time_stamp.apply(lambda t: time.strptime(t, '%Y-%m-%d %H:%M').tm_min)
     datasets_m.loc[:, 'time_str'] = map(lambda *xlist: "-".join([str(x) for x in xlist]),
                                         datasets_m.loc[:, 'wday'],
-                                        datasets_m.loc[:, 'hour'],
-                                        datasets_m.loc[:, 'min'])
+                                        datasets_m.loc[:, 'hour'])
 
     dd = pd.get_dummies(datasets_m.time_str)
     dd.columns = ['time_str_' + str(d) for d in dd.columns]
@@ -151,50 +151,58 @@ for m_id in mall_id_list:
     del wifi_feat
 
     datasets_m = pd.concat([datasets_m, wifi_power, wifi_flag], axis=1, ignore_index=False)
+    print "origin feature size: ", datasets_m.shape
     del wifi_power
     del wifi_flag
     gc.collect()
 
     print "4.3 project features"
-    rp = SparseRandomProjection(n_components=500)
-    projected_data = pd.DataFrame(data=rp.fit_transform(datasets_m.iloc[:, 9:]))
-    datasets_pj = pd.concat([datasets_m.iloc[:, 0:9], projected_data], axis=1)
-    del rp
-    del projected_data
-    del datasets_m
-    gc.collect()
+    eps = [0.5, 0.4, 0.3, 0.2]
+    macc = 0
+    for e in eps: 
+        print "project for eps: {}".format(e)
+        nc = johnson_lindenstrauss_min_dim(datasets_m.shape[0], e)
+        rp = SparseRandomProjection(n_components=nc)
+        pj_data = pd.DataFrame(data=rp.fit_transform(datasets_m.iloc[:, 9:]))
+        datasets_pj = pd.concat([datasets_m.iloc[:, 0:9], pj_data], axis=1)
+        print "project feature size: ", datasets_pj.shape
+        del rp
+        del pj_data
+        gc.collect()
 
-    datasets_sample_in = datasets_pj[datasets_pj.shop_id.notnull()].copy()
-    datasets_sample_in.loc[:, 'shop_id'] = shop_le.transform(datasets_sample_in.shop_id.values)
+        datasets_sample_in = datasets_pj[datasets_pj.shop_id.notnull()].copy()
+        datasets_sample_in.loc[:, 'shop_id'] = shop_le.transform(datasets_sample_in.shop_id.values)
 
-    X_train, X_validate, y_train, y_validate = train_test_split(datasets_sample_in.iloc[:, 9:],
-                                                                datasets_sample_in.iloc[:, 8],
-                                                                test_size=0.05)
+        X_train, X_validate, y_train, y_validate = train_test_split(datasets_sample_in.iloc[:, 9:],
+                                                                    datasets_sample_in.iloc[:, 8],
+                                                                    test_size=0.05)
 
-    datasets_sample_out = datasets_pj[datasets_pj.row_id.notnull()].copy().reset_index(drop=True)
-    datasets_sample_out.loc[:, 'row_id'] = datasets_sample_out.loc[:, 'row_id'].astype(int).astype(str)
-    del datasets_pj
-    gc.collect()
+        datasets_sample_out = datasets_pj[datasets_pj.row_id.notnull()].copy().reset_index(drop=True)
+        datasets_sample_out.loc[:, 'row_id'] = datasets_sample_out.loc[:, 'row_id'].astype(int).astype(str)
+        del datasets_pj
+        gc.collect()
 
-    print "4.4 train voting models"
-    vtc = VotingClassifier(estimators=[('rf', rf), ('et', et), ('bg', bg)],
-                           voting='soft',
-                           weights=[1, 1, 1],
-                           flatten_transform=True)
-    vtc.fit(X_train, y_train)
+        print "4.4 train voting models"
+        vtc = VotingClassifier(estimators=[('rf', rf), ('et', et), ('bg', bg)],
+                               voting='soft',
+                               weights=[1, 1, 1],
+                               flatten_transform=True)
+        vtc.fit(X_train, y_train)
 
-    print "shop predict: "
-    acc = [accuracy_score(vtc.predict(X_train), y_train), accuracy_score(vtc.predict(X_validate), y_validate)]
-    accuracy_list.append(acc)
-    print acc
+        print "shop predict: "
+        acc = [accuracy_score(vtc.predict(X_train), y_train), accuracy_score(vtc.predict(X_validate), y_validate)]
+        if macc < acc[1]:
+            macc = acc[1]
+            accuracy_list.append(acc)
+            print acc
 
-    p_sample_out = Series(shop_le.inverse_transform(vtc.predict(datasets_sample_out.ix[:, 9:])))
-    predict_pd = pd.concat([datasets_sample_out.loc[:, 'row_id'], p_sample_out], axis=1, ignore_index=True)
-    predict_pd.columns = ['row_id', 'shop_id']
-    print "p_result: "
-    print predict_pd.head()
-    print "p_result shape: ", predict_pd.shape
-    predict_pd.to_csv(RET_DIR + "/{}.csv".format(m_id), index=False)
+            p_sample_out = Series(shop_le.inverse_transform(vtc.predict(datasets_sample_out.ix[:, 9:])))
+            predict_pd = pd.concat([datasets_sample_out.loc[:, 'row_id'], p_sample_out], axis=1, ignore_index=True)
+            predict_pd.columns = ['row_id', 'shop_id']
+            print "p_result: "
+            print predict_pd.head()
+            print "p_result shape: ", predict_pd.shape
+            predict_pd.to_csv(RET_DIR + "/{}.csv".format(m_id), index=False)
 
 # STEP 5
 print "5. train for every mall finished."
